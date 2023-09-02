@@ -1,0 +1,12 @@
+__kernel void update_particles(__global float4* particles, __global float4* velocities, __global float4* accelerations, float4 attractor, const float dt)
+{
+    int i = get_global_id(0);
+
+    if (attractor.w == 1.0f) {
+        float4 acceleration = (attractor - particles[i]) * 0.5f;
+        accelerations[i] = acceleration;
+    }
+    
+    velocities[i] += accelerations[i] * dt;
+    particles[i] += velocities[i] * dt;
+}
