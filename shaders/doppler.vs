@@ -21,6 +21,6 @@ void main()
     float relativeVelocity = dot(normalizedVelocity, toParticle);
     float dopplerShift = 0.5 / (0.5 - relativeVelocity * 0.5);
 
-    blueShift = distance / dopplerShift;
-    redShift = distance * dopplerShift;
+    blueShift = distance * dopplerShift;
+    redShift = distance / dopplerShift;
 }

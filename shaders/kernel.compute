@@ -3,8 +3,11 @@ __kernel void update_particles(__global float4* particles, __global float4* velo
     int i = get_global_id(0);
 
     if (attractor.w == 1.0f) {
-        float4 acceleration = (attractor - particles[i]) * 0.5f;
-        accelerations[i] = acceleration;
+        float4 dir = normalize(attractor - particles[i]);
+        float dist = length(attractor - particles[i]);
+        if (dist < 0.1f) dist = 0.1f;
+        float acceleration = 1.0f / (dist);
+        accelerations[i] = dir * acceleration;
     }
     
     velocities[i] += accelerations[i] * dt;
