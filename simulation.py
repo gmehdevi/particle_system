@@ -1,3 +1,4 @@
+#! /usr/bin/env python3
 import glfw
 from OpenGL.GL import *
 import pyopencl as cl
@@ -9,9 +10,8 @@ from pathlib import Path
 num_particles = 1000000
 window_width = 800
 window_height = 600
-change_attractor = False 
+change_attractor = False
 scroll_offset = 0.0
-
 
 def reset_simulation(queue, particles_buffer, velocities_buffer, accelerations_buffer, sphere):
     if sphere:
@@ -70,7 +70,8 @@ class Camera:
         self.fov = radians(45)
         self.attractor = vec4(0.0,0.0,0.0,1.0)
         self.sphere = False
-        
+        self.fullscreen = False
+
     def keyboard_input(self, window, delta_time):
         vertical_movement = 0.0
         if glfw.get_key(window, glfw.KEY_SPACE) == glfw.PRESS:
@@ -93,7 +94,17 @@ class Camera:
             time.sleep(0.2)
         if glfw.get_key(window, glfw.KEY_ESCAPE) == glfw.PRESS:
             glfw.set_window_should_close(window, True)
-        
+        if glfw.get_key(window, glfw.KEY_F) == glfw.PRESS:
+            self.fullscreen = not self.fullscreen
+            if self.fullscreen:
+                monitor = glfw.get_primary_monitor()
+                mode = glfw.get_video_mode(monitor)
+                glfw.set_window_monitor(window, monitor, 0, 0, mode.size[0], mode.size[1], mode.refresh_rate)
+            else:
+                glfw.set_window_monitor(window, None, 0, 0, window_width, window_height, 0)
+
+
+
     def mouse_input(self, window, delta_time):
         xpos, ypos = glfw.get_cursor_pos(window)
         if self.first_mouse:
@@ -122,7 +133,7 @@ class Camera:
         direction.y = sin(radians(self.pitch))
         direction.z = sin(radians(self.yaw)) * cos(radians(self.pitch))
         self.front = normalize(direction)
-        
+
     def get_view_matrix(self):
         return lookAt(self.position, self.position + self.front, self.up)
 
@@ -177,17 +188,17 @@ def main():
 
     glfw.make_context_current(window)
     glfw.set_window_title(window, "Particle System")
-    
-    # glfw.set_framebuffer_size_callback(window, framebuffer_size_callback)
-    
+
+    glfw.set_framebuffer_size_callback(window, framebuffer_size_callback)
+
     glfw.set_scroll_callback(window, scroll_callback)
 
     glEnable(GL_VERTEX_PROGRAM_POINT_SIZE)
-    
+
     doppler_vs = create_shader(GL_VERTEX_SHADER, Path("./shaders/doppler.vs").read_text())
     doppler_fs = create_shader(GL_FRAGMENT_SHADER, Path("./shaders/doppler.fs").read_text())
     doppler_program_id = create_program(doppler_vs, doppler_fs)
-    
+
     doppler_pos_attrib = glGetAttribLocation(doppler_program_id, "aPosition")
     doppler_vel_attrib = glGetAttribLocation(doppler_program_id, "aVelocity")
 
@@ -211,7 +222,7 @@ def main():
     glEnableVertexAttribArray(attractor_pos_attrib)
 
     context = cl.create_some_context()
- 
+
     queue = cl.CommandQueue(context)
     particles = np.random.uniform(-0.5, 0.5, (num_particles, 4)).astype(np.float32)
     velocities = np.zeros((num_particles, 4), dtype=np.float32)
@@ -234,17 +245,18 @@ def main():
     glfw.show_window(window)
     glfw.set_input_mode(window, glfw.CURSOR, glfw.CURSOR_DISABLED)
 
-    projection = perspective(camera.fov, window_width / window_height, camera.near, camera.far)
-    glEnable(GL_DEPTH_TEST) 
+    mode = glfw.get_video_mode(glfw.get_primary_monitor())
+    projection = perspective(camera.fov,  mode.size[0] /  mode.size[1], camera.near, camera.far)
+    glEnable(GL_DEPTH_TEST)
 
     while not glfw.window_should_close(window):
         current_frame = glfw.get_time()
         delta_time = current_frame - last_frame
         last_frame = current_frame
-        
-        camera.keyboard_input(window, delta_time)   
+
+        camera.keyboard_input(window, delta_time)
         camera.mouse_input(window, delta_time)
-        
+
         if glfw.get_key(window, glfw.KEY_R) == glfw.PRESS:
             reset_simulation(queue, particles_buffer, velocities_buffer, accelerations_buffer, camera.sphere)
             camera.position = vec3(0.0, 0.0, 3.0)
@@ -270,7 +282,7 @@ def main():
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
         if change_attractor:
-            
+
             view = camera.get_view_matrix()
             view_projection = projection * view
             glUseProgram(attractor_program_id)
@@ -278,29 +290,29 @@ def main():
             draw_sphere_surface(camera.attractor.xyz, 0.05, 10)
             camera.attractor = vec4(camera.position + camera.front * scroll_offset, camera.attractor.w)
             kernel.set_args(particles_buffer, velocities_buffer, accelerations_buffer, camera.attractor, np.float32(0.01))
-        
+
 
         cl.enqueue_nd_range_kernel(queue, kernel, particles.shape, None)
         cl._enqueue_read_buffer(queue, particles_buffer, particles).wait()
-        cl._enqueue_read_buffer(queue, velocities_buffer, velocities).wait() 
+        cl._enqueue_read_buffer(queue, velocities_buffer, velocities).wait()
 
         glBindBuffer(GL_ARRAY_BUFFER, vbo)
         glBufferSubData(GL_ARRAY_BUFFER, 0, particles.nbytes, particles)
-        glBufferSubData(GL_ARRAY_BUFFER, num_particles * 4 * sizeof(GLfloat), velocities.nbytes, velocities) 
-        
+        glBufferSubData(GL_ARRAY_BUFFER, num_particles * 4 * sizeof(GLfloat), velocities.nbytes, velocities)
+
         glUseProgram(doppler_program_id)
         view_projection = projection * camera.get_view_matrix()
         glUniformMatrix4fv(glGetUniformLocation(doppler_program_id, "viewProjection"), 1, GL_FALSE, value_ptr(view_projection))
         glUniform3fv(glGetUniformLocation(doppler_program_id, "cameraPosition"), 1, value_ptr(camera.position))
-            
+
         glDrawArrays(GL_POINTS, 0, num_particles)
         fps = 1.0 / delta_time
         fps_interval += delta_time
 
-        # if fps_interval > 0.5:
-        #     glfw.set_window_title(window, f"Particle System | FPS: {fps:.2f}")
-        #     fps_interval = 0
-            
+        if fps_interval > 0.5:
+            glfw.set_window_title(window, f"Particle System | FPS: {fps:.2f}")
+            fps_interval = 0
+
         glfw.swap_buffers(window)
         glfw.poll_events()
 
