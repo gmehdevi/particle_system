@@ -16,7 +16,7 @@ void main()
 
     vec3 toParticle = aPosition.xyz - cameraPosition;
     float distance = length(toParticle);
-    
+
     vec3 normalizedVelocity = normalize(aVelocity.xyz);
     float relativeVelocity = dot(normalizedVelocity, toParticle);
     float dopplerShift = 0.5 / (0.5 - relativeVelocity * 0.5);
