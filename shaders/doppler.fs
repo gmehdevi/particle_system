@@ -1,10 +1,14 @@
 #version 330 core
+
+in float velocityTowardsObserver;
 out vec4 FragColor;
 
-in float redShift;
-in float blueShift;
+void main() {
+    float redShift = 0.0;
+    float blueShift = 0.0;
+    
+    blueShift = velocityTowardsObserver;
+    redShift = -velocityTowardsObserver;
 
-void main()
-{
-    FragColor = vec4(max(0.5, 0.5 + redShift), 0.25, max(0.5, 0.5 + blueShift), 1.0);
+    FragColor = vec4(redShift, 0.0, blueShift, 1.0);
 }

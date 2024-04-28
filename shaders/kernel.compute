@@ -5,51 +5,71 @@ float lcg_random(unsigned int *seed) {
     return (float)(*seed) / 4294967296.0f;
 }
 
-
-__kernel void update_particles(__global float4* particles, __global float4* velocities, __global float4* accelerations, float4 attractor, const float dt, const unsigned int num_particles) {
+__kernel void initialize_particles_sphere(
+    __global float4* positions,
+    __global float4* velocities,
+    __global float4* accelerations,
+    const unsigned int n_particles,
+    const float radius) {
     int i = get_global_id(0);
-
-    if (i < num_particles && attractor.w == 1.0f) {
-        float4 diff = attractor - particles[i];
-        float dist = length(diff);
-        if (dist < 0.1f) dist = 0.1f; // Avoid division by very small numbers
-        float4 dir = normalize(diff); // Normalization after checking distance
-        float acceleration = 1.0f / dist;
-        accelerations[i] = dir * acceleration;
+    if (i < n_particles) {
+        unsigned int seed = i;
+        float theta = 2.0f * M_PI * lcg_random(&seed);
+        float phi = acos(2.0f * lcg_random(&seed) - 1.0f);
+        float r = radius * cbrt(lcg_random(&seed)); // Cube root for even distribution
+        positions[i] = (float4)(r * sin(phi) * cos(theta), r * sin(phi) * sin(theta), r * cos(phi), 1.0f);
+        velocities[i] = (float4)(0.0f, 0.0f, 0.0f, 0.0f); // Initial velocity
+        accelerations[i] = (float4)(0.0f, 0.0f, 0.0f, 0.0f); // Initial acceleration
     }
-
-    velocities[i] += accelerations[i] * dt;
-    particles[i] += velocities[i] * dt;
 }
 
-__kernel void initialize_particles_cube(__global float4* particles, __global float4* velocities, __global float4* accelerations, const unsigned int num_particles) {
+__kernel void initialize_particles_cube(
+    __global float4* positions,
+    __global float4* velocities,
+    __global float4* accelerations,
+    const unsigned int n_particles) {
     int i = get_global_id(0);
-    if (i < num_particles) {
-        unsigned int seed = i;  // Unique seed for each particle
+    if (i < n_particles) {
+        unsigned int seed = i;
 
-        // Generate random positions within the range [-0.5, 0.5]
         float x = lcg_random(&seed) - 0.5f;
         float y = lcg_random(&seed) - 0.5f;
         float z = lcg_random(&seed) - 0.5f;
 
-        // Assign positions and initial velocities and accelerations
-        particles[i] = (float4)(x, y, z, 1.0f);
+        positions[i] = (float4)(x, y, z, 1.0f);
         velocities[i] = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
         accelerations[i] = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
     }
 }
 
-
-__kernel void initialize_particles_sphere(__global float4* particles, __global float4* velocities, __global float4* accelerations, const unsigned int num_particles) {
-    int i = get_global_id(0);
-    if (i < num_particles) {
-        unsigned int seed = i;
-        float theta = 2.0f * M_PI * lcg_random(&seed);
-        float phi = acos(2.0f * lcg_random(&seed) - 1.0f);
-        float r = 0.5f * cbrt((float)lcg_random(&seed));
-
-        particles[i] = (float4)(r * sin(phi) * cos(theta), r * sin(phi) * sin(theta), r * cos(phi), 1.0f);
-        velocities[i] = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
-        accelerations[i] = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+__kernel void update_particles(
+    __global float4* positions,
+    __global float4* velocities,
+    __global float4* accelerations,
+    const unsigned int n_particles,
+    const float dt) {
+    int gid = get_global_id(0);
+    if (gid < n_particles) {
+        // Update velocity and position based on acceleration
+        velocities[gid] += accelerations[gid] * dt;
+        velocities[gid] *= 0.9f; // Damping factor
+        positions[gid] += velocities[gid] * dt;
     }
 }
+
+
+__kernel void attractor(
+    __global float4* positions,
+    __global float4* velocities,
+    __global float4* accelerations,
+    const float4 attractor,
+    const unsigned int n_particles,
+    const float dt) {
+    int gid = get_global_id(0);
+    if (gid < n_particles) {
+        float4 direction = attractor - positions[gid];
+        float4 force =  normalize(direction) * 0.05f;
+        accelerations[gid] += force;
+    }
+}
+

@@ -2,7 +2,6 @@ glfw
 numpy
 platformdirs
 PyGLM
-pyopencl
 PyOpenGL
 pytools
 typing_extensions

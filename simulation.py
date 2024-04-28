@@ -1,27 +1,37 @@
-#! /usr/bin/env python3
-import glfw
 from OpenGL.GL import *
+import glfw
 import pyopencl as cl
+from pyopencl.tools import get_gl_sharing_context_properties
 import numpy as np
 from glm import *
-import time
 from pathlib import Path
+import time
+import os
+os.environ['PYOPENCL_COMPILER_OUTPUT'] = '1'
 
-num_particles = 1000000
-window_width = 800
-window_height = 600
-change_attractor = False
-scroll_offset = 0.0
-cube_init_kernel = None
-sphere_init_kernel = None
+n_particles = 10000000
+window_width, window_height = 800, 800
 
-def reset_simulation(queue, particles_buffer, velocities_buffer, accelerations_buffer, sphere):
+
+def reshape(window, width, height):
+    glViewport(0, 0, width, height)
+
+def framebuffer_size_callback(window, width, height):
+    global window_width, window_height
+    glViewport(0, 0, width, height)
+    window_width = width
+    window_height = height
+
+def reset_simulation(queue, pos, vel, acc, sphere, prog, n_particles):
+    cl.enqueue_acquire_gl_objects(queue, [pos, vel, acc])
+
     if sphere:
-        sphere_init_kernel.set_args(particles_buffer, velocities_buffer, accelerations_buffer, np.uint32(num_particles))
-        cl.enqueue_nd_range_kernel(queue, sphere_init_kernel, (num_particles,), None)
+        prog.initialize_particles_sphere(queue, (n_particles,), None, pos, vel, acc, np.uint32(n_particles), np.float32(0.5))
     else:
-        cube_init_kernel.set_args(particles_buffer, velocities_buffer, accelerations_buffer, np.uint32(num_particles))
-        cl.enqueue_nd_range_kernel(queue, cube_init_kernel, (num_particles,), None)
+        prog.initialize_particles_cube(queue, (n_particles,), None, pos, vel, acc, np.uint32(n_particles))
+
+    cl.enqueue_release_gl_objects(queue, [pos, vel, acc])
+    queue.finish()
 
 
 def create_shader(shader_type, shader_source):
@@ -40,95 +50,6 @@ def create_program(vertex_shader, fragment_shader):
     if glGetProgramiv(program, GL_LINK_STATUS) != GL_TRUE:
         raise RuntimeError(glGetProgramInfoLog(program))
     return program
-
-class Camera:
-    def __init__(self):
-        self.position = vec3(0.0, 0.0, 3.0)
-        self.front = -normalize(self.position)
-        self.up = vec3(0.0, 1.0, 0.0)
-        self.yaw = -90.0
-        self.pitch = 0.0
-        self.move_speed = 2.5
-        self.mouse_sensitivity = 10
-        self.last_x = window_width / 2
-        self.last_y = window_height / 2
-        self.first_mouse = True
-        self.near = 0.1
-        self.far = 1000000
-        self.fov = radians(45)
-        self.attractor = vec4(0.0,0.0,0.0,1.0)
-        self.sphere = False
-        self.fullscreen = False
-
-    def keyboard_input(self, window, delta_time):
-        vertical_movement = 0.0
-        if glfw.get_key(window, glfw.KEY_SPACE) == glfw.PRESS:
-            vertical_movement += self.move_speed
-        if glfw.get_key(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS:
-            vertical_movement -= self.move_speed
-        self.position += self.up * vertical_movement * delta_time
-
-        if glfw.get_key(window, glfw.KEY_W) == glfw.PRESS:
-            self.position += self.front * self.move_speed * delta_time
-        if glfw.get_key(window, glfw.KEY_S) == glfw.PRESS:
-            self.position -= self.front * self.move_speed * delta_time
-        if glfw.get_key(window, glfw.KEY_A) == glfw.PRESS:
-            self.position -= normalize(cross(self.front, self.up)) * self.move_speed * delta_time
-        if glfw.get_key(window, glfw.KEY_D) == glfw.PRESS:
-            self.position += normalize(cross(self.front, self.up)) * self.move_speed * delta_time
-        if glfw.get_key(window, glfw.KEY_T) == glfw.PRESS:
-            self.sphere = not self.sphere
-            print(f"sphere {'on' if self.sphere else 'off'}")
-            time.sleep(0.2)
-        if glfw.get_key(window, glfw.KEY_ESCAPE) == glfw.PRESS:
-            glfw.set_window_should_close(window, True)
-        if glfw.get_key(window, glfw.KEY_F) == glfw.PRESS:
-            self.fullscreen = not self.fullscreen
-            if self.fullscreen:
-                monitor = glfw.get_primary_monitor()
-                mode = glfw.get_video_mode(monitor)
-                glfw.set_window_monitor(window, monitor, 0, 0, mode.size[0], mode.size[1], mode.refresh_rate)
-            else:
-                glfw.set_window_monitor(window, None, 0, 0, window_width, window_height, 0)
-
-        return {
-            'reset_simulation': glfw.get_key(window, glfw.KEY_R) == glfw.PRESS,
-            'toggle_attractor': glfw.get_key(window, glfw.KEY_G) == glfw.PRESS,
-            'toggle_attractor_status': glfw.get_key(window, glfw.KEY_O) == glfw.PRESS,
-        }
-
-
-    def mouse_input(self, window, delta_time):
-        xpos, ypos = glfw.get_cursor_pos(window)
-        if self.first_mouse:
-            self.last_x = xpos
-            self.last_y = ypos
-            self.first_mouse = False
-
-        xoffset = xpos - self.last_x
-        yoffset = self.last_y - ypos
-        self.last_x = xpos
-        self.last_y = ypos
-
-        xoffset *= self.mouse_sensitivity * delta_time
-        yoffset *= self.mouse_sensitivity * delta_time
-
-        self.yaw += xoffset
-        self.pitch += yoffset
-
-        if self.pitch > 89.0:
-            self.pitch = 89.0
-        if self.pitch < -89.0:
-            self.pitch = -89.0
-
-        direction = vec3()
-        direction.x = cos(radians(self.yaw)) * cos(radians(self.pitch))
-        direction.y = sin(radians(self.pitch))
-        direction.z = sin(radians(self.yaw)) * cos(radians(self.pitch))
-        self.front = normalize(direction)
-
-    def get_view_matrix(self):
-        return lookAt(self.position, self.position + self.front, self.up)
 
 def draw_sphere_surface(position, radius, num_segments):
     for j in range(num_segments):
@@ -152,148 +73,263 @@ def draw_sphere_surface(position, radius, num_segments):
             glVertex3f(position.x + x * zr1, position.y + y * zr1, position.z + z1)
         glEnd()
 
-def framebuffer_size_callback(window, width, height):
-    global window_width, window_height
-    glViewport(0, 0, width, height)
-    window_width = width
-    window_height = height
+class Camera:
+    def __init__(self):
+        self.position = vec3(0.0, 0.0, 3.0)
+        self.front = -normalize(self.position)
+        self.up = vec3(0.0, 1.0, 0.0)
+        self.yaw = -90.0
+        self.pitch = 0.0
+        self.move_speed = 2.5
+        self.mouse_sensitivity = 10
+        self.last_x = window_width / 2
+        self.last_y = window_height / 2
+        self.first_mouse = True
+        self.near = 0.1
+        self.far = 1000000
+        self.fov = radians(45)
+        self.fullscreen = False
+        self.scroll_offset = 1.0
+        self.window_width = window_width
+        self.window_height = window_height
 
 
-def scroll_callback(window, x_off, y_off):
-    global scroll_offset
-    scroll_offset += y_off * 0.1
-    if scroll_offset < 1: scroll_offset = 1
+    def keyboard_input(self, window, delta_time):
+        vertical_movement = 0.0
 
+        if glfw.get_key(window, glfw.KEY_SPACE) == glfw.PRESS:
+            vertical_movement += self.move_speed
+        if glfw.get_key(window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS:
+            vertical_movement -= self.move_speed
+        self.position += self.up * vertical_movement * delta_time
 
-def main():
-    global window_width, window_height, change_attractor, scroll_offset, cube_init_kernel, sphere_init_kernel
+        if glfw.get_key(window, glfw.KEY_W) == glfw.PRESS:
+            self.position += self.front * self.move_speed * delta_time
+        if glfw.get_key(window, glfw.KEY_S) == glfw.PRESS:
+            self.position -= self.front * self.move_speed * delta_time
+        if glfw.get_key(window, glfw.KEY_A) is glfw.PRESS:
+            self.position -= normalize(cross(self.front, self.up)) * self.move_speed * delta_time
+        if glfw.get_key(window, glfw.KEY_D) is glfw.PRESS:
+            self.position += normalize(cross(self.front, self.up)) * self.move_speed * delta_time
 
-    if cl.have_gl():
-        print("PyOpenCL has OpenGL support.")
-    else:
-        print("PyOpenCL does not have OpenGL support.")
-    return
+        if glfw.get_key(window, glfw.KEY_ESCAPE) == glfw.PRESS:
+            glfw.set_window_should_close(window, True)
+            glfw.terminate()
+            os._exit(0)
+        elif glfw.get_key(window, glfw.KEY_F) == glfw.PRESS:
+            if self.fullscreen:
+                monitor = glfw.get_primary_monitor()
+                mode = glfw.get_video_mode(monitor)
+                glfw.set_window_monitor(window, monitor, 0, 0, mode.size[0], mode.size[1], mode.refresh_rate)
+                self.window_width, self.window_height = mode.size[0], mode.size[1]
+            else:
+                glfw.set_window_monitor(window, None, 50, 50, window_width, window_height, 0)
+                self.window_width, self.window_height = window_width, window_height
+            self.fullscreen = not self.fullscreen
+            time.sleep(0.1)
+            
+        return {
+            'reset': glfw.get_key(window, glfw.KEY_R) == glfw.PRESS,
+            'change_attractor': glfw.get_key(window, glfw.KEY_C) == glfw.PRESS,
+            'sphere' : glfw.get_key(window, glfw.KEY_Q) == glfw.PRESS,
+            'toggle_attractor' : glfw.get_key(window, glfw.KEY_T) == glfw.PRESS,
+            'velocity' : glfw.get_key(window, glfw.KEY_V) == glfw.PRESS
+        }
 
-    if not glfw.init():
-        return
+    def mouse_input(self, window, delta_time):
+        xpos, ypos = glfw.get_cursor_pos(window)
+        if self.first_mouse:
+            self.last_x = xpos
+            self.last_y = ypos
+            self.first_mouse = False
 
-    glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 4)
-    glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 0)
-    glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
-    glfw.window_hint(glfw.VISIBLE, glfw.TRUE)
+        xoffset = xpos - self.last_x
+        yoffset = self.last_y - ypos
+        self.last_x = xpos
+        self.last_y = ypos
 
-    window = glfw.create_window(window_width, window_height, "Particle System", None, None)
-    if not window:
-        glfw.terminate()
-        return
+        xoffset *= self.mouse_sensitivity * delta_time
+        yoffset *= self.mouse_sensitivity * delta_time
 
-    glfw.make_context_current(window)
-    glfw.set_window_title(window, "Particle System")
-    glfw.set_framebuffer_size_callback(window, framebuffer_size_callback)
-    glfw.set_scroll_callback(window, scroll_callback)
+        self.yaw += xoffset
+        self.pitch = max(min(self.pitch + yoffset, 89.0), -89.0)
 
-    glEnable(GL_VERTEX_PROGRAM_POINT_SIZE)
+        direction = vec3(cos(radians(self.yaw)) * cos(radians(self.pitch)),
+                         sin(radians(self.pitch)),
+                         sin(radians(self.yaw)) * cos(radians(self.pitch)))
+        self.front = normalize(direction)
 
-    doppler_vs = create_shader(GL_VERTEX_SHADER, Path("./shaders/doppler.vs").read_text())
-    doppler_fs = create_shader(GL_FRAGMENT_SHADER, Path("./shaders/doppler.fs").read_text())
-    doppler_program_id = create_program(doppler_vs, doppler_fs)
+    def get_view_matrix(self):
+        return lookAt(self.position, self.position + self.front, self.up)
 
-    doppler_pos_attrib = glGetAttribLocation(doppler_program_id, "aPosition")
-    doppler_vel_attrib = glGetAttribLocation(doppler_program_id, "aVelocity")
+    def get_projection_matrix(self):
+        return perspective(self.fov, float(self.window_width) / self.window_height, self.near, self.far)
 
-    vbo = glGenBuffers(1)
-    glBindBuffer(GL_ARRAY_BUFFER, vbo)
-    glBufferData(GL_ARRAY_BUFFER, num_particles * 4 * sizeof(GLfloat) * 2, None, GL_DYNAMIC_DRAW)
+    def scroll_callback(self, window, x_off, y_off):
+        self.scroll_offset += y_off * 0.1
+        if self.scroll_offset < 1: self.scroll_offset = 1
 
-    attractor_vs = create_shader(GL_VERTEX_SHADER, Path("shaders/attractor.vs").read_text())
-    attractor_fs = create_shader(GL_FRAGMENT_SHADER, Path("shaders/attractor.fs").read_text())
-    attractor_program_id = create_program(attractor_vs, attractor_fs)
+    
+def create_buffers(ctx, n_particles):
+    buffer_size = n_particles * 4 * 4
 
-    platforms = cl.get_platforms()
-    devices = platforms[0].get_devices()
+    pos_vbo_id = glGenBuffers(1)
+    glBindBuffer(GL_ARRAY_BUFFER, pos_vbo_id)
+    glBufferData(GL_ARRAY_BUFFER, buffer_size, None, GL_STATIC_DRAW)
+    pos_vbo = cl.GLBuffer(ctx, cl.mem_flags.READ_WRITE, pos_vbo_id)
 
-    devices = [d for d in platforms[0].get_devices() if d.version >= "OpenCL 1.2"]
-    if not devices:
-        print("No devices support OpenCL 1.2")
-        return
+    vel_vbo_id = glGenBuffers(1)
+    glBindBuffer(GL_ARRAY_BUFFER, vel_vbo_id)
+    glBufferData(GL_ARRAY_BUFFER, buffer_size, None, GL_STATIC_DRAW)
+    vel_vbo = cl.GLBuffer(ctx, cl.mem_flags.READ_WRITE, vel_vbo_id)
+    
+    acc_vbo_id = glGenBuffers(1)
+    glBindBuffer(GL_ARRAY_BUFFER, acc_vbo_id)
+    glBufferData(GL_ARRAY_BUFFER, buffer_size, None, GL_STATIC_DRAW)
+    acc_vbo = cl.GLBuffer(ctx, cl.mem_flags.READ_WRITE, acc_vbo_id)
+    
+    glBindBuffer(GL_ARRAY_BUFFER, 0)
+    return pos_vbo, vel_vbo, acc_vbo, pos_vbo_id, vel_vbo_id
+   
+    
+def initialize():
+    platform = cl.get_platforms()[0]
+    ctx_properties = get_gl_sharing_context_properties()
+    ctx = cl.Context(properties=ctx_properties, devices=[platform.get_devices()[0]])
+    pos, vel, acc, pos_vbo, vel_vbo  = create_buffers(ctx, n_particles)
+    prog = cl.Program(ctx, 
+                      Path('shaders/kernel.compute').read_text()).build()
+    queue = cl.CommandQueue(ctx)
+    reset_simulation(queue, pos, vel, acc, True, prog, n_particles)
+    queue.finish()
+    return pos_vbo, vel_vbo, pos, vel, acc, queue, prog
 
-    cl_ctx = cl.Context(devices)
-
-    queue = cl.CommandQueue(cl_ctx)
-
-    cl_particles_buffer = cl.Buffer(cl_ctx, cl.mem_flags.READ_WRITE, int(vbo))
-
-    cl_program = cl.Program(cl_ctx, Path("shaders/kernel.compute").read_text()).build()
-    update_kernel = cl_program.update_particles
-    sphere_init_kernel = cl_program.initialize_particles_sphere
-    cube_init_kernel = cl_program.initialize_particles_cube
-
-    camera = Camera()
-
-    glfw.show_window(window)
-    glfw.set_input_mode(window, glfw.CURSOR, glfw.CURSOR_DISABLED)
-
-    mode = glfw.get_video_mode(glfw.get_primary_monitor())
-    projection = perspective(camera.fov, mode.size[0] / mode.size[1], camera.near, camera.far)
+def main_loop(window, pos_vbo, vel_vbo, pos, vel, acc, queue, prog, camera):
+    sphere = True
+    change_attractor = False
+    velocity = False
+    
+    attractor = vec4(0.0, 0.0, 0.0, 1.0)
+    vertex_shader = create_shader(GL_VERTEX_SHADER, 
+                                  Path('shaders/doppler.vs').read_text())
+    fragment_shader = create_shader(GL_FRAGMENT_SHADER,
+                                    Path('shaders/doppler.fs').read_text())
+    shader_program = create_program(vertex_shader, fragment_shader)
+    
+    vertex_shader = create_shader(GL_VERTEX_SHADER, 
+                                  Path('shaders/attractor.vs').read_text())
+    fragment_shader = create_shader(GL_FRAGMENT_SHADER, 
+                                    Path('shaders/attractor.fs').read_text())
+    att_shader_program = create_program(vertex_shader, fragment_shader)
+    
+    vertex_shader = create_shader(GL_VERTEX_SHADER,
+                                  Path('shaders/velocity.vs').read_text())
+    fragment_shader = create_shader(GL_FRAGMENT_SHADER,
+                                    Path('shaders/velocity.fs').read_text())
+    velocity_shader_program = create_program(vertex_shader, fragment_shader)
+        
+    glEnable(GL_BLEND)
     glEnable(GL_DEPTH_TEST)
-
     last_frame = glfw.get_time()
+
     while not glfw.window_should_close(window):
         current_frame = glfw.get_time()
-        delta_time = current_frame - last_frame
+        dt = current_frame - last_frame
         last_frame = current_frame
 
-        input_flags = camera.keyboard_input(window, delta_time)
 
-        if input_flags.get('reset_simulation'):
-            reset_simulation(queue, cl_particles_buffer, camera.sphere)
-            update_kernel.set_args(cl_particles_buffer, camera.attractor, np.float32(0.01), np.uint32(num_particles))
-
-        if input_flags.get('toggle_attractor'):
-            change_attractor = not change_attractor
-            scroll_offset = 3.0
-
-        if input_flags.get('toggle_attractor_status'):
-            camera.attractor.w = not camera.attractor.w
-            print(f"attractor {'on' if camera.attractor.w else 'off'}")
-
-        if change_attractor or input_flags.get('toggle_attractor_status'):
-            update_kernel.set_args(cl_particles_buffer, camera.attractor, np.float32(0.01), np.uint32(num_particles))
-
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-
-        if change_attractor:
-            view = camera.get_view_matrix()
-            view_projection = projection * view
-            glUseProgram(attractor_program_id)
-            glUniformMatrix4fv(glGetUniformLocation(attractor_program_id, "viewProjection"), 1, GL_FALSE, value_ptr(view_projection))
-            draw_sphere_surface(camera.attractor.xyz, 0.05, 10)
-            camera.attractor = vec4(camera.position + camera.front * scroll_offset, camera.attractor.w)
-            update_kernel.set_args(cl_particles_buffer, camera.attractor, np.float32(0.01), np.uint32(num_particles))
-
-        glFinish()
-        cl.enqueue_acquire_gl_objects(queue, [cl_particles_buffer])
-        cl.enqueue_nd_range_kernel(queue, update_kernel, (num_particles,), None)
-        cl.enqueue_release_gl_objects(queue, [cl_particles_buffer])
-        queue.finish()
-
-        glBindBuffer(GL_ARRAY_BUFFER, vbo)
-        glVertexAttribPointer(doppler_pos_attrib, 4, GL_FLOAT, GL_FALSE, 0, None)
-        glEnableVertexAttribArray(doppler_pos_attrib)
-        glVertexAttribPointer(doppler_vel_attrib, 4, GL_FLOAT, GL_FALSE, 0, None)
-        glEnableVertexAttribArray(doppler_vel_attrib)
-        glDrawArrays(GL_POINTS, 0, num_particles)
-
-        fps = 1.0 / delta_time
-        fps_interval += delta_time
-        if fps_interval > 0.5:
-            glfw.set_window_title(window, f"Particle System | FPS: {fps:.2f}")
-            fps_interval = 0
-
-        glfw.swap_buffers(window)
+        sleep = True
         glfw.poll_events()
+        inputs = camera.keyboard_input(window, dt)
+        if inputs['reset']:
+            reset_simulation(queue, pos, vel, acc, sphere, prog, n_particles)
+        elif inputs['sphere']:
+            sphere = not sphere
+        elif inputs['change_attractor']:
+            change_attractor = not change_attractor
+        elif inputs['toggle_attractor']:
+            attractor.w = 1.0 - attractor.w
+        elif inputs['velocity']:
+            velocity = not velocity
+        else:
+            sleep = False
+        
+        if sleep:
+            time.sleep(0.1)            
+            glfw.wait_events_timeout(2)
+            glfw.poll_events()
+            
+            sleep = False
+        camera.mouse_input(window, dt)
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        
+        glUseProgram(att_shader_program)
+        draw_sphere_surface(attractor.xyz, 0.01, 10)
+        
+        projection = camera.get_projection_matrix()
+        view = camera.get_view_matrix();
+        view_projection = projection * view;
 
+        
+        if velocity:
+            glUseProgram(velocity_shader_program)
+            vp_location = glGetUniformLocation(velocity_shader_program, "viewProjection")
+            glUniformMatrix4fv(vp_location, 1, GL_FALSE, value_ptr(view_projection))
+        else:
+            glUseProgram(shader_program)
+            vp_location = glGetUniformLocation(shader_program, "viewProjection")
+            glUniformMatrix4fv(vp_location, 1, GL_FALSE, value_ptr(view_projection))
+            
+            cam_pos_location = glGetUniformLocation(shader_program, "cameraPosition")
+            glUniform3f(cam_pos_location, camera.position.x, camera.position.y, camera.position.z)
+
+
+        cl.enqueue_acquire_gl_objects(queue, [pos, vel, acc])
+        prog.update_particles(queue, (n_particles,), None, pos, vel, acc, np.uint32(n_particles), np.float32(dt))
+        if attractor.w == 1.0:
+            prog.attractor(queue, (n_particles,), None, pos, vel, acc, attractor, np.uint32(n_particles), np.float32(dt))
+        cl.enqueue_release_gl_objects(queue, [pos, vel, acc])
+        queue.finish()
+        
+        
+        glBindBuffer(GL_ARRAY_BUFFER, pos_vbo)
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 16, None)
+
+        glBindBuffer(GL_ARRAY_BUFFER, vel_vbo)
+        glEnableVertexAttribArray(1) 
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 16, None)
+
+        glDrawArrays(GL_POINTS, 0, n_particles)
+        
+        if change_attractor:
+            attractor.xyz = camera.position + camera.front * camera.scroll_offset
+
+        glUseProgram(att_shader_program)
+        att_vp_location = glGetUniformLocation(att_shader_program, "viewProjection")
+        glUniformMatrix4fv(att_vp_location, 1, GL_FALSE, value_ptr(view_projection))
+        draw_sphere_surface(attractor.xyz, 0.01, 5)
+        
+
+        fps = 1.0 / dt
+        glfw.set_window_title(window, f"Particle System | FPS: {fps:.2f}")
+        
+        glfw.swap_buffers(window)
+
+
+if __name__ == '__main__':
+    if not glfw.init():
+        exit()
+    window = glfw.create_window(window_width, window_height, "3D Sphere Simulation", None, None)
+    glfw.window_hint(glfw.DECORATED, True)
+    if not window:
+        glfw.terminate()
+        exit()
+    camera = Camera()
+    glfw.make_context_current(window)
+    glfw.set_framebuffer_size_callback(window, reshape)
+    glfw.set_scroll_callback(window, camera.scroll_callback)
+    glfw.set_input_mode(window, glfw.CURSOR, glfw.CURSOR_DISABLED)
+    pos_vbo, vel_vbo, pos, vel, acc, queue, prog = initialize()
+    main_loop(window, pos_vbo, vel_vbo, pos, vel, acc, queue, prog, camera)
     glfw.terminate()
-
-if __name__ == "__main__":
-    main()
